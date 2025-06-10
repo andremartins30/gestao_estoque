@@ -4,7 +4,7 @@ import { HttpContext } from '@adonisjs/core/http'
 export default class ProductRegisterController {
   public async store({ request, response }: HttpContext) {
     // Obtém os dados enviados na requisição
-    const data = request.only(['name', 'description', 'price', 'quantity'])
+    const data = request.only(['name', 'description', 'price', 'quantity', 'categoryId'])
 
     // Valida se o campo "name" foi fornecido
     if (!data.name) {
@@ -19,6 +19,7 @@ export default class ProductRegisterController {
       description: data.description || 'Sem descrição',
       price: data.price ?? 0.0,
       quantity: data.quantity ?? 0,
+      categoryId: data.categoryId || null,
     }
 
     // Cria o produto no banco de dados
@@ -33,7 +34,7 @@ export default class ProductRegisterController {
 
   public async index({ response }: HttpContext) {
     try {
-      const products = await Product.all()
+      const products = await Product.query().preload('category').orderBy('id')
 
       return response.status(200).json({
         message: 'Lista de produtos',
@@ -55,13 +56,14 @@ export default class ProductRegisterController {
       const product = await Product.findOrFail(productId)
 
       // Obtém os dados enviados na requisição
-      const data = request.only(['name', 'description', 'price'])
+      const data = request.only(['name', 'description', 'price', 'categoryId'])
 
       // Atualiza apenas os campos permitidos
       product.merge({
         name: data.name || product.name,
         description: data.description || product.description,
         price: data.price ?? product.price,
+        categoryId: data.categoryId || null,
       })
 
       // Salva as alterações no banco de dados

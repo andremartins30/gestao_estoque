@@ -1,7 +1,8 @@
 import { DateTime } from 'luxon'
-import { BaseModel, column, hasMany } from '@adonisjs/lucid/orm'
+import { BaseModel, belongsTo, column, hasMany } from '@adonisjs/lucid/orm'
 import type { HasMany } from '@adonisjs/lucid/relations'
 import StockMovement from './stock_movement.js'
+import Category from './category.js'
 
 export default class Product extends BaseModel {
   @column({ isPrimary: true })
@@ -18,6 +19,12 @@ export default class Product extends BaseModel {
 
   @column()
   public price: number
+
+  @column()
+  public categoryId: number
+
+  @belongsTo(() => Category)
+  public category: BelongsTo<typeof Category>
 
   @hasMany(() => StockMovement)
   public movements: HasMany<typeof StockMovement>
