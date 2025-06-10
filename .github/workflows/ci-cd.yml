@@ -1,0 +1,215 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # Job 1: Testes e Qualidade de Código
+  test:
+    name: 🧪 Tests & Code Quality
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: gestao_user
+          POSTGRES_PASSWORD: gestao123
+          POSTGRES_DB: gestao_estoque_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - name: 📥 Checkout código
+        uses: actions/checkout@v4
+
+      - name: 🟢 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: 📦 Instalar dependências
+        run: npm ci
+
+      - name: 🔍 Verificar tipos TypeScript
+        run: npm run typecheck
+
+      - name: 🧹 Verificar linting
+        run: npm run lint
+
+      - name: 💅 Verificar formatação
+        run: npm run format -- --check
+
+      - name: 🏗️ Build da aplicação
+        run: npm run build
+
+      - name: 🧪 Executar testes
+        run: npm run test
+        env:
+          NODE_ENV: test
+          PORT: 3333
+          HOST: localhost
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_USER: gestao_user
+          DB_PASSWORD: gestao123
+          DB_DATABASE: gestao_estoque_test
+          APP_KEY: ${{ secrets.APP_KEY || 'DSmNVA8IOJevUTSRVeBoBuS4XcNbc1dU' }}
+          LOG_LEVEL: info
+
+      - name: 📊 Upload coverage (se disponível)
+        uses: codecov/codecov-action@v3
+        if: success()
+        continue-on-error: true
+
+  # Job 2: Testes com Docker
+  docker-test:
+    name: 🐳 Docker Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Checkout código
+        uses: actions/checkout@v4
+
+      - name: 🔧 Criar .env para testes
+        run: |
+          cat << EOF > .env.docker
+          TZ=UTC
+          PORT=3333
+          HOST=0.0.0.0
+          LOG_LEVEL=debug
+          APP_KEY=${{ secrets.APP_KEY || 'DSmNVA8IOJevUTSRVeBoBuS4XcNbc1dU' }}
+          NODE_ENV=test
+          DB_HOST=postgres
+          DB_PORT=5432
+          DB_USER=gestao_user
+          DB_PASSWORD=gestao123
+          DB_DATABASE=gestao_estoque_test
+          EOF
+
+      - name: 🧪 Executar testes com Docker
+        run: |
+          docker compose -f docker-compose.test.yml up --build --exit-code-from app
+
+      - name: 🧹 Cleanup containers
+        if: always()
+        run: |
+          docker compose -f docker-compose.test.yml down -v
+
+  # Job 3: Build e Push da imagem Docker
+  docker-build:
+    name: 🐳 Docker Build & Push
+    needs: [test, docker-test]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: 📥 Checkout código
+        uses: actions/checkout@v4
+
+      - name: 🔐 Login no GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 🏷️ Extrair metadados
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: 🏗️ Build e Push da imagem Docker
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Job 4: Testes de Segurança
+  security:
+    name: 🔒 Security Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Checkout código
+        uses: actions/checkout@v4
+
+      - name: 🟢 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: 📦 Instalar dependências
+        run: npm ci
+
+      - name: 🔍 Audit de segurança NPM
+        run: npm audit --audit-level moderate
+        continue-on-error: true
+
+      - name: 🛡️ Scan de vulnerabilidades com Snyk
+        uses: snyk/actions/node@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high
+        continue-on-error: true
+
+  # Job 5: Deploy para staging
+  deploy-staging:
+    name: 🚀 Deploy Staging
+    needs: [test, docker-test, docker-build]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/develop'
+    environment: staging
+
+    steps:
+      - name: 🚀 Deploy para staging
+        run: |
+          echo "🔄 Deploying to staging environment..."
+          echo "📦 Image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:develop"
+          # Aqui você adicionaria os comandos específicos para seu provedor
+          # Exemplo para Docker Swarm, Kubernetes, etc.
+
+  # Job 6: Deploy para produção
+  deploy-production:
+    name: 🚀 Deploy Production
+    needs: [test, docker-test, docker-build, security]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    environment: production
+
+    steps:
+      - name: 🚀 Deploy para produção
+        run: |
+          echo "🔄 Deploying to production environment..."
+          echo "📦 Image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          # Aqui você adicionaria os comandos específicos para seu provedor
